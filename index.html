@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Co se stane při otevření example.com</title>
+<style>
+  :root { color-scheme: light dark; }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+  button { font: inherit; padding: 4px 12px; margin: 0 4px 6px 0; cursor: pointer; }
+  button.on { font-weight: bold; border-color: #d98a00; background: #ffb30033; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+  #theme { font-size: 13px; margin: 0; }
+  .devices { display: flex; gap: 6px; margin: 1rem 0; }
+  .devices div { flex: 1; padding: 8px 4px; text-align: center; font-size: 14px; border: 1px solid #8888; border-radius: 6px; opacity: .4; }
+  .devices div.on { opacity: 1; border-color: #d98a00; background: #ffb30033; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  td { padding: 6px 8px; border-bottom: 1px solid #8884; }
+  td + td { font-family: ui-monospace, monospace; }
+  tr.chg { background: #ffb30033; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Otevření https://example.com</h1>
+  <button id="theme" type="button"></button>
+</header>
+<div id="steps"></div>
+<div id="hops"></div>
+<div class="devices" id="devices"></div>
+<p id="note"></p>
+<ul id="msgs"></ul>
+<table id="frame"></table>
+<p style="font-size:13px;opacity:.7">Zjednodušení: jen IPv4 (IPv6 místo ARP používá NDP), jedna cesta sítí, ukázkové adresy.</p>
+
+<script>
+const PC = 'aa:aa:aa:00:00:10', RL = 'bc:bc:bc:00:00:01', RW = 'bc:bc:bc:00:00:02';
+const LAN = '192.168.1.10', PUB = '198.51.100.7', SRV = '203.0.113.80';
+const DEVICES = { pc: 'Počítač', sw: 'Switch', rt: 'Router', net: 'Internet', srv: 'Server', dns: 'DNS' };
+const LAYERS = ['L2 Ethernet', 'L3 IP', 'L4 TCP/UDP', 'L5–7 data'];
+const LOCAL = [PC + ' → ' + RL, LAN + ' → ' + SRV, 'TCP 51234 → 443'];
+const ALL = ['pc', 'sw', 'rt', 'net', 'srv'];
+
+const steps = [
+  { name: '1 ARP', dev: ['pc', 'sw', 'rt'],
+    note: 'Cíl je mimo lokální síť, takže počítač musí poslat paket bráně. V síti se doručuje podle MAC adres, proto se broadcastem zeptá na MAC brány. Obvykle už ji má v cache a tento krok se přeskočí.',
+    msgs: ['Počítač → všichni: Kdo má IP 192.168.1.1?', 'Router → Počítač: Já, moje MAC je ' + RL],
+    frame: [PC + ' → ff:ff:ff:ff:ff:ff', 'bez IP hlavičky (ARP)', '—', 'ARP dotaz na 192.168.1.1'] },
+  { name: '2 DNS', dev: ['pc', 'sw', 'rt', 'net', 'dns'],
+    note: 'Prohlížeč zná jen jméno, tak se zeptá DNS serveru (UDP, port 53). Často se ptá přímo routeru, který dotaz přepošle dál. IP adresy v ukázce jsou z dokumentačních rozsahů, skutečná IP example.com se mění.',
+    msgs: ['Počítač → DNS: Jaká je IP pro example.com?', 'DNS → Počítač: ' + SRV],
+    frame: [PC + ' → ' + RL, LAN + ' → 8.8.8.8', 'UDP 51000 → 53', 'DNS dotaz: example.com'] },
+  { name: '3 TCP', dev: ALL,
+    note: 'Třícestný handshake otevře spojení. TCP pak hlídá pořadí a znovu posílá ztracené části.',
+    msgs: ['Počítač → Server: SYN', 'Server → Počítač: SYN-ACK', 'Počítač → Server: ACK'],
+    frame: [LOCAL[0], LOCAL[1], 'TCP 51234 → 443 [SYN]', '(prázdné)'] },
+  { name: '4 TLS', dev: ALL,
+    note: 'Domluví se šifra a vymění klíče, server se prokáže certifikátem (v TLS 1.3 už šifrovaně). Po cestě zůstane vidět IP, port a obvykle i jméno serveru (SNI).',
+    msgs: ['Počítač → Server: ClientHello (šifry, klíč, jméno serveru)', 'Server → Počítač: ServerHello, dál šifrovaně certifikát', 'Oba: hotovo, data jsou šifrovaná'],
+    frame: [...LOCAL, 'TLS ClientHello (jméno serveru viditelné)'] },
+  { name: '5 HTTP', dev: ALL,
+    note: 'Samotný požadavek. Jeho obsah je zašifrovaný. HTTP/1.1 je tu pro přehlednost, prohlížeče dnes obvykle použijí HTTP/2 nebo HTTP/3 (přes QUIC a UDP), které skládají TCP a TLS jinak.',
+    msgs: ['Počítač → Server: GET / HTTP/1.1', 'Server → Počítač: 200 OK + HTML'],
+    frame: [...LOCAL, 'šifrováno: GET / HTTP/1.1'] },
+  { name: 'Cesta paketu', hops: [
+    { name: 'Počítač → switch', dev: ['pc', 'sw'], changed: [],
+      note: 'Počítač pošle rámec na MAC adresu brány.',
+      frame: [...LOCAL, 'šifrovaná HTTP data'] },
+    { name: 'Switch → router', dev: ['sw', 'rt'], changed: [],
+      note: 'Switch čte cílovou MAC a rámec nijak nemění.',
+      frame: [...LOCAL, 'šifrovaná HTTP data'] },
+    { name: 'Router → internet', dev: ['rt', 'net'], changed: [0, 1, 2],
+      note: 'Router rozbalí rámec, NAT přepíše zdrojovou IP a port, sníží TTL a vše zabalí do nového rámce.',
+      frame: [RW + ' → cc:cc:cc:00:00:01', PUB + ' → ' + SRV, 'TCP 40001 → 443', 'šifrovaná HTTP data'] },
+    { name: 'Internet → server', dev: ['net', 'srv'], changed: [0],
+      note: 'Každý další router mění MAC adresy a snižuje TTL. Cílová i zdrojová IP zůstávají stejné.',
+      frame: ['ee:ee:ee:00:00:01 → dc:dc:dc:00:00:34', PUB + ' → ' + SRV, 'TCP 40001 → 443', 'šifrovaná HTTP data'] },
+  ] },
+];
+
+const $ = id => document.getElementById(id);
+let step = 0, hop = 0;
+
+function buttons(box, names, active, onPick) {
+  box.replaceChildren(...names.map((n, i) => {
+    const b = document.createElement('button');
+    b.textContent = n;
+    if (i === active) b.className = 'on';
+    b.onclick = () => onPick(i);
+    return b;
+  }));
+}
+
+function render() {
+  const s = steps[step];
+  buttons($('steps'), steps.map(x => x.name), step, i => { step = i; hop = 0; render(); });
+  buttons($('hops'), s.hops ? s.hops.map(h => h.name) : [], hop, i => { hop = i; render(); });
+
+  const v = s.hops ? s.hops[hop] : s;
+  const changed = v.changed || [];
+
+  $('devices').replaceChildren(...Object.entries(DEVICES).map(([k, label]) => {
+    const d = document.createElement('div');
+    d.textContent = label;
+    if (v.dev.includes(k)) d.className = 'on';
+    return d;
+  }));
+
+  $('note').textContent = v.note;
+  $('msgs').replaceChildren(...(v.msgs || []).map(m => {
+    const li = document.createElement('li');
+    li.textContent = m;
+    return li;
+  }));
+  $('frame').replaceChildren(...v.frame.map((val, i) => {
+    const tr = document.createElement('tr');
+    if (changed.includes(i)) tr.className = 'chg';
+    tr.innerHTML = '<td></td><td></td>';
+    tr.children[0].textContent = LAYERS[i];
+    tr.children[1].textContent = val;
+    return tr;
+  }));
+}
+
+const MODES = [['auto', 'automaticky'], ['light', 'světlý'], ['dark', 'tmavý']];
+let mode = 0;
+try { mode = Math.max(0, MODES.findIndex(m => m[0] === localStorage.getItem('theme'))); } catch (e) {}
+
+function applyTheme() {
+  const [key, label] = MODES[mode];
+  if (key === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.dataset.theme = key;
+  $('theme').textContent = 'Vzhled: ' + label;
+  try { localStorage.setItem('theme', key); } catch (e) {}
+}
+$('theme').onclick = () => { mode = (mode + 1) % MODES.length; applyTheme(); };
+
+applyTheme();
+render();
+</script>
+</body>
+</html>
